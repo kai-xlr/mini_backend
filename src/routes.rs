@@ -7,6 +7,7 @@ pub fn route_request(request: &str) -> (&'static str, String) {
     };
 
     let mut parts = request_line.split_whitespace();
+
     let method = match parts.next() {
         Some(m) => m,
         None => return ("400 BAD REQUEST", utils::bad_request()),
@@ -21,9 +22,10 @@ pub fn route_request(request: &str) -> (&'static str, String) {
         return ("400 BAD REQUEST", utils::bad_request());
     }
 
-    // 4. Routing logic
     if path == "/health" {
         ("200 OK", utils::ok("OK"))
+    } else if path == "/ws" {
+        ("101 SWITCHING PROTOCOLS", String::new())
     } else if let Some(message) = path.strip_prefix("/echo/") {
         ("200 OK", utils::ok(message))
     } else {
