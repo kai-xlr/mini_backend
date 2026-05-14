@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, broadcast};
 
@@ -23,7 +23,7 @@ pub async fn handle_connection(
 
     let mut buffer = [0; 1024];
 
-    match stream.read(&mut buffer).await {
+    match stream.peek(&mut buffer).await {
         Ok(size) if size > 0 => {
             let request_str = String::from_utf8_lossy(&buffer[..size]);
 
@@ -61,7 +61,7 @@ pub async fn handle_connection(
         Ok(_) => {}
 
         Err(e) => {
-            eprintln!("[ERR] Failed to read from stream: {}", e);
+            eprintln!("[ERR] Failed to peek from stream: {}", e);
         }
     }
 }
