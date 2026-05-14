@@ -1,18 +1,28 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 
-use tokio::sync::broadcast;
+use tokio::net::TcpStream;
+use tokio::sync::{Mutex, broadcast};
 
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
-use tokio::net::TcpStream;
+use crate::state::ServerState;
 
 pub async fn handle_websocket(
     mut ws_stream: WebSocketStream<TcpStream>,
     tx: Arc<broadcast::Sender<String>>,
+    state: Arc<Mutex<ServerState>>,
+    addr: SocketAddr,
 ) {
-    println!("[WS] Handshake successful");
+    {
+        let mut s = state.lock().await;
+
+        s.add_client(addr.to_string());
+
+        println!("[INFO] {} Joined chat (Total: {})", addr, s.client_count());
+    }
 
     let mut rx = tx.subscribe();
 
@@ -26,21 +36,37 @@ pub async fn handle_websocket(
 
                         if message.is_text() {
                             if let Ok(text) = message.to_text() {
-                                println!("[WS MESSAGE] {}", text);
 
-                                if tx.send(text.to_string()).is_err() {
+                                println!(
+                                    "[MSG] {}: {}",
+                                    addr,
+                                    text
+                                );
+
+                                let broadcast_msg =
+                                    format!("{}: {}", addr, text);
+
+                                if tx.send(broadcast_msg).is_err() {
                                     break;
                                 }
                             }
                         }
 
                         if message.is_close() {
-                            println!("[WS] Client disconnected");
                             break;
                         }
                     }
 
-                    _ => {
+                    Some(Err(e)) => {
+                        eprintln!(
+                            "[ERR] WebSocket receive failed: {}",
+                            e
+                        );
+
+                        break;
+                    }
+
+                    None => {
                         break;
                     }
                 }
@@ -50,20 +76,38 @@ pub async fn handle_websocket(
             result = rx.recv() => {
                 match result {
                     Ok(msg) => {
-                        if ws_stream
+                        if let Err(e) = ws_stream
                             .send(Message::Text(msg.into()))
                             .await
-                            .is_err()
                         {
+                            eprintln!(
+                                "[ERR] WebSocket send failed: {}",
+                                e
+                            );
+
                             break;
                         }
                     }
 
-                    Err(_) => {
+                    Err(e) => {
+                        eprintln!(
+                            "[ERR] Broadcast receive failed: {}",
+                            e
+                        );
+
                         break;
                     }
                 }
             }
         }
+    }
+
+    // Cleanup disconnected client
+    {
+        let mut s = state.lock().await;
+
+        s.remove_client(&addr.to_string());
+
+        println!("[INFO] {} Left chat (Total: {})", addr, s.client_count());
     }
 }

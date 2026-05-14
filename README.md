@@ -1,6 +1,6 @@
 # mini_backend
 
-An async HTTP + WebSocket backend written in Rust, built on tokio.
+An async HTTP + WebSocket backend written in Rust, built on tokio. Uses shared state via `Arc<Mutex<ServerState>>` to track connected WebSocket clients.
 
 ## Endpoints
 
@@ -44,8 +44,9 @@ websocat ws://127.0.0.1:8080/ws
 
 ```
 src/
-  main.rs      — Server setup: listener, broadcast channel, spawns connections
+  main.rs      — Server setup: listener, broadcast channel, shared state, spawns connections
   http.rs      — HTTP connection lifecycle: read, route, upgrade or respond
   routes.rs    — HTTP request parsing, routing logic, and response helpers
-  websocket.rs — WebSocket handler with broadcast fan-out via tokio::sync::broadcast
+  state.rs     — Shared `ServerState` tracking connected WebSocket clients via a `HashSet<String>`
+  websocket.rs — WebSocket handler with broadcast fan-out via tokio::sync::broadcast and client tracking via shared state
 ```
