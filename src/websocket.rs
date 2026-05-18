@@ -6,14 +6,18 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, broadcast};
 
-use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
+use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 
+use rusqlite::Connection;
+
+use crate::db::save_message;
 use crate::state::ServerState;
 
 pub async fn handle_websocket(
     mut ws_stream: WebSocketStream<TcpStream>,
     tx: Arc<broadcast::Sender<String>>,
     state: Arc<Mutex<ServerState>>,
+    db: Arc<Mutex<Connection>>,
     addr: SocketAddr,
 ) {
     {
@@ -29,22 +33,32 @@ pub async fn handle_websocket(
     loop {
         tokio::select! {
 
-            // Incoming websocket message
             result = ws_stream.next() => {
                 match result {
+
                     Some(Ok(message)) => {
 
                         if message.is_text() {
+
                             if let Ok(text) = message.to_text() {
 
-                                println!(
-                                    "[MSG] {}: {}",
-                                    addr,
-                                    text
-                                );
+                                if text.trim().is_empty() {
+                                    continue;
+                                }
 
                                 let broadcast_msg =
                                     format!("{}: {}", addr, text);
+
+                                {
+                                    let mut s = state.lock().await;
+                                    s.add_message(broadcast_msg.clone());
+                                }
+
+                                {
+                                    let conn = db.lock().await;
+
+                                    let _ = save_message(&conn, &broadcast_msg);
+                                }
 
                                 if tx.send(broadcast_msg).is_err() {
                                     break;
@@ -57,57 +71,23 @@ pub async fn handle_websocket(
                         }
                     }
 
-                    Some(Err(e)) => {
-                        eprintln!(
-                            "[ERR] WebSocket receive failed: {}",
-                            e
-                        );
-
-                        break;
-                    }
-
-                    None => {
-                        break;
-                    }
+                    Some(Err(_)) => break,
+                    None => break,
                 }
             }
 
-            // Incoming broadcast message
             result = rx.recv() => {
-                match result {
-                    Ok(msg) => {
-                        if let Err(e) = ws_stream
-                            .send(Message::Text(msg.into()))
-                            .await
-                        {
-                            eprintln!(
-                                "[ERR] WebSocket send failed: {}",
-                                e
-                            );
-
-                            break;
-                        }
-                    }
-
-                    Err(e) => {
-                        eprintln!(
-                            "[ERR] Broadcast receive failed: {}",
-                            e
-                        );
-
-                        break;
-                    }
+                if let Ok(msg) = result {
+                    let _ = ws_stream
+                        .send(Message::Text(msg.into()))
+                        .await;
+                } else {
+                    break;
                 }
             }
         }
     }
 
-    // Cleanup disconnected client
-    {
-        let mut s = state.lock().await;
-
-        s.remove_client(&addr.to_string());
-
-        println!("[INFO] {} Left chat (Total: {})", addr, s.client_count());
-    }
+    let mut s = state.lock().await;
+    s.remove_client(&addr.to_string());
 }
