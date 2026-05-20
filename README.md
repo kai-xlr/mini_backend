@@ -38,6 +38,8 @@ websocat ws://127.0.0.1:8080/ws
 # Messages typed in one terminal appear in all others
 ```
 
+Database path can be configured via the `CHAT_DB_PATH` environment variable (defaults to `chat.db` in the working directory).
+
 ## Dependencies
 
 | Crate | Purpose |

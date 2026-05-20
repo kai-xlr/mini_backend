@@ -49,79 +49,77 @@ pub async fn handle_websocket(
 
                     Some(Ok(message)) => {
 
-                        if message.is_text() {
+                        if message.is_text()
+                            && let Ok(text) = message.to_text()
+                        {
+                            if text.trim().is_empty() {
+                                continue;
+                            }
 
-                            if let Ok(text) = message.to_text() {
+                            // -------------------------
+                            // Message Received
+                            // -------------------------
+                            {
+                                let mut s = state.lock().await;
 
-                                if text.trim().is_empty() {
-                                    continue;
-                                }
+                                let timestamp = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
 
-                                // -------------------------
-                                // Message Received
-                                // -------------------------
-                                {
-                                    let mut s = state.lock().await;
+                                s.record_event(ChatEvent::MessageReceived {
+                                    sender: addr.to_string(),
+                                    body: text.to_string(),
+                                });
 
-                                    let timestamp = SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs();
+                                let conn = db.lock().await;
+                                let _ = save_event(
+                                    &conn,
+                                    timestamp,
+                                    "MessageReceived",
+                                    &format!("{}: {}", addr, text),
+                                );
+                            }
 
-                                    s.record_event(ChatEvent::MessageReceived {
-                                        sender: addr.to_string(),
-                                        body: text.to_string(),
-                                    });
+                            let broadcast_msg =
+                                format!("{}: {}", addr, text);
 
-                                    let conn = db.lock().await;
-                                    let _ = save_event(
-                                        &conn,
-                                        timestamp,
-                                        "MessageReceived",
-                                        &format!("{}: {}", addr, text),
-                                    );
-                                }
+                            {
+                                let mut s = state.lock().await;
+                                s.add_message(broadcast_msg.clone());
+                            }
 
-                                let broadcast_msg =
-                                    format!("{}: {}", addr, text);
+                            {
+                                let conn = db.lock().await;
+                                let _ = save_message(&conn, &broadcast_msg);
+                            }
 
-                                {
-                                    let mut s = state.lock().await;
-                                    s.add_message(broadcast_msg.clone());
-                                }
+                            // -------------------------
+                            // Message Broadcast
+                            // -------------------------
+                            {
+                                let mut s = state.lock().await;
 
-                                {
-                                    let conn = db.lock().await;
-                                    let _ = save_message(&conn, &broadcast_msg);
-                                }
+                                let timestamp = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_secs();
 
-                                // -------------------------
-                                // Message Broadcast
-                                // -------------------------
-                                {
-                                    let mut s = state.lock().await;
+                                s.record_event(ChatEvent::MessageBroadcast(
+                                    broadcast_msg.clone(),
+                                ));
 
-                                    let timestamp = SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs();
+                                let conn = db.lock().await;
+                                let _ = save_event(
+                                    &conn,
+                                    timestamp,
+                                    "MessageBroadcast",
+                                    &broadcast_msg,
+                                );
+                            }
 
-                                    s.record_event(ChatEvent::MessageBroadcast(
-                                        broadcast_msg.clone(),
-                                    ));
-
-                                    let conn = db.lock().await;
-                                    let _ = save_event(
-                                        &conn,
-                                        timestamp,
-                                        "MessageBroadcast",
-                                        &broadcast_msg,
-                                    );
-                                }
-
-                                if tx.send(broadcast_msg).is_err() {
-                                    break;
-                                }
+                            if tx.send(broadcast_msg).is_err() {
+                                break;
                             }
                         }
 
@@ -138,7 +136,7 @@ pub async fn handle_websocket(
             result = rx.recv() => {
                 if let Ok(msg) = result {
                     let _ = ws_stream
-                        .send(Message::Text(msg.into()))
+                        .send(Message::Text(msg))
                         .await;
                 } else {
                     break;

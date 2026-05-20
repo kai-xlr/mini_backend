@@ -4,6 +4,7 @@ mod routes;
 mod state;
 mod websocket;
 
+use std::process;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -22,7 +23,7 @@ async fn main() -> std::io::Result<()> {
         Ok(conn) => conn,
         Err(e) => {
             eprintln!("[ERR] DB init failed: {}", e);
-            return Ok(());
+            process::exit(1);
         }
     };
 
@@ -57,7 +58,7 @@ async fn main() -> std::io::Result<()> {
     // -------------------------
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
 
-    let (tx, _rx) = broadcast::channel::<String>(16);
+    let (tx, _) = broadcast::channel::<String>(16);
 
     let tx = Arc::new(tx);
 

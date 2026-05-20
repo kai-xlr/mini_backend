@@ -36,12 +36,6 @@ pub fn route_request(request: &str) -> (&'static str, String) {
         ("200 OK", ok("OK"))
     } else if path == "/ws" {
         ("101 SWITCHING PROTOCOLS", String::new())
-    } else if path == "/messages" {
-        ("200 OK", ok(""))
-    } else if path == "/events" {
-        ("200 OK", ok(""))
-    } else if path == "/events/audit" {
-        ("200 OK", ok(""))
     } else if let Some(message) = path.strip_prefix("/echo/") {
         ("200 OK", ok(message))
     } else {

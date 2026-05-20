@@ -10,3 +10,5 @@
 .vscode/
 .idea/
 *.iml
+
+chat.db
