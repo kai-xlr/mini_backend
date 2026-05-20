@@ -391,6 +391,7 @@ version = "0.1.0"
 dependencies = [
  "futures-util",
  "rusqlite",
+ "sha1",
  "tokio",
  "tokio-tungstenite",
 ]

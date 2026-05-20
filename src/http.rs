@@ -4,12 +4,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, broadcast};
 
-use tokio_tungstenite::accept_async;
+use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::WebSocketStream;
+
+use rusqlite::Connection;
 
 use crate::routes::{ok, route_request};
 use crate::state::{ChatEvent, ServerState};
 use crate::websocket::handle_websocket;
-use rusqlite::Connection;
 
 // -------------------------
 // Helpers
@@ -31,6 +33,96 @@ async fn write_response(stream: &mut TcpStream, response: String) {
 }
 
 // -------------------------
+// WebSocket handshake helpers
+// -------------------------
+
+fn base64_encode_sha1(input: &[u8]) -> String {
+    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+
+        out.push(TABLE[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(TABLE[((triple >> 12) & 0x3F) as usize] as char);
+
+        if chunk.len() > 1 {
+            out.push(TABLE[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+
+        if chunk.len() > 2 {
+            out.push(TABLE[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+
+    out
+}
+
+fn websocket_accept_key(key: &str) -> String {
+    use sha1::{Digest, Sha1};
+
+    let mut hasher = Sha1::new();
+    hasher.update(key.as_bytes());
+    hasher.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    let digest = hasher.finalize();
+
+    base64_encode_sha1(&digest)
+}
+
+fn extract_ws_key(request: &str) -> Option<String> {
+    for line in request.lines() {
+        if line.to_lowercase().starts_with("sec-websocket-key:") {
+            return line.split(':').nth(1).map(|k| k.trim().to_string());
+        }
+    }
+    None
+}
+
+async fn handle_websocket_upgrade(
+    mut stream: TcpStream,
+    request: &str,
+    tx: Arc<broadcast::Sender<String>>,
+    state: Arc<Mutex<ServerState>>,
+    db: Arc<Mutex<Connection>>,
+    addr: std::net::SocketAddr,
+) {
+    let key = match extract_ws_key(request) {
+        Some(k) => k,
+        None => return,
+    };
+
+    let accept = websocket_accept_key(&key);
+
+    let upgrade_response = format!(
+        "HTTP/1.1 101 Switching Protocols\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Accept: {}\r\n\
+         \r\n",
+        accept
+    );
+
+    if stream.write_all(upgrade_response.as_bytes()).await.is_err() {
+        return;
+    }
+
+    if stream.flush().await.is_err() {
+        return;
+    }
+
+    let ws_stream = WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+
+    handle_websocket(ws_stream, tx, state, db, addr).await;
+}
+
+// -------------------------
 // Connection Handler
 // -------------------------
 
@@ -40,7 +132,10 @@ pub async fn handle_connection(
     state: Arc<Mutex<ServerState>>,
     db: Arc<Mutex<Connection>>,
 ) {
-    let addr = stream.peer_addr().ok();
+    let addr = match stream.peer_addr().ok() {
+        Some(a) => a,
+        None => return,
+    };
 
     let mut buffer = [0; 1024];
 
@@ -50,23 +145,14 @@ pub async fn handle_connection(
 
             let (method, path) = parse_request_line(&request);
 
-            // -------------------------
-            // /messages endpoint
-            // -------------------------
             if method == "GET" && path == "/messages" {
                 let s = state.lock().await;
-
                 let body = s.messages().join("\n");
-
                 let response = ok(&body);
-
                 write_response(&mut stream, response).await;
                 return;
             }
 
-            // -------------------------
-            // /events endpoint
-            // -------------------------
             if method == "GET" && path == "/events" {
                 let s = state.lock().await;
 
@@ -98,7 +184,6 @@ pub async fn handle_connection(
                 }
 
                 let body = lines.join("\n");
-
                 let response = ok(&body);
                 write_response(&mut stream, response).await;
                 return;
@@ -106,11 +191,9 @@ pub async fn handle_connection(
 
             if method == "GET" && path == "/events/audit" {
                 let memory = state.lock().await;
-
                 let memory_count = memory.events().len();
 
                 let db = db.lock().await;
-
                 let db_count = match crate::db::get_event_count(&db) {
                     Ok(c) => c,
                     Err(_) => {
@@ -138,20 +221,19 @@ pub async fn handle_connection(
             }
 
             // -------------------------
-            // normal routing
+            // WebSocket upgrade
             // -------------------------
-            let (status, response) = route_request(&request);
-
-            if status == "101 SWITCHING PROTOCOLS" {
-                if let Ok(ws_stream) = accept_async(stream).await {
-                    if let Some(addr) = addr {
-                        handle_websocket(ws_stream, tx, state, db, addr).await;
-                    }
-                }
-
-                return;
+            if method == "GET" && path == "/ws" {
+                return handle_websocket_upgrade(
+                    stream, &request, tx, state, db, addr,
+                )
+                .await;
             }
 
+            // -------------------------
+            // normal routing
+            // -------------------------
+            let (_status, response) = route_request(&request);
             write_response(&mut stream, response).await;
         }
 
