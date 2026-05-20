@@ -7,7 +7,7 @@ use tokio::sync::{Mutex, broadcast};
 use tokio_tungstenite::accept_async;
 
 use crate::routes::{ok, route_request};
-use crate::state::ServerState;
+use crate::state::{ChatEvent, ServerState};
 use crate::websocket::handle_websocket;
 use rusqlite::Connection;
 
@@ -60,6 +60,79 @@ pub async fn handle_connection(
 
                 let response = ok(&body);
 
+                write_response(&mut stream, response).await;
+                return;
+            }
+
+            // -------------------------
+            // /events endpoint
+            // -------------------------
+            if method == "GET" && path == "/events" {
+                let s = state.lock().await;
+
+                let mut lines = Vec::new();
+
+                for recorded in s.events() {
+                    let line = match &recorded.event {
+                        ChatEvent::ClientConnected(addr) => {
+                            format!("[{}] CONNECTED: {}", recorded.timestamp, addr)
+                        }
+
+                        ChatEvent::MessageReceived { sender, body } => {
+                            format!(
+                                "[{}] RECEIVED from {}: {}",
+                                recorded.timestamp, sender, body
+                            )
+                        }
+
+                        ChatEvent::MessageBroadcast(msg) => {
+                            format!("[{}] BROADCAST: {}", recorded.timestamp, msg)
+                        }
+
+                        ChatEvent::ClientDisconnected(addr) => {
+                            format!("[{}] DISCONNECTED: {}", recorded.timestamp, addr)
+                        }
+                    };
+
+                    lines.push(line);
+                }
+
+                let body = lines.join("\n");
+
+                let response = ok(&body);
+                write_response(&mut stream, response).await;
+                return;
+            }
+
+            if method == "GET" && path == "/events/audit" {
+                let memory = state.lock().await;
+
+                let memory_count = memory.events().len();
+
+                let db = db.lock().await;
+
+                let db_count = match crate::db::get_event_count(&db) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        let response = ok("INTEGRITY ERROR: Unable to read database");
+                        write_response(&mut stream, response).await;
+                        return;
+                    }
+                };
+
+                let body = if memory_count == db_count {
+                    format!(
+                        "INTEGRITY OK: [{}] events verified chronologically.",
+                        memory_count
+                    )
+                } else {
+                    format!(
+                        "INTEGRITY ERROR: Memory has [{}] entries but DB has [{}] entries.",
+                        memory_count, db_count
+                    )
+                };
+
+                let response = ok(&body);
                 write_response(&mut stream, response).await;
                 return;
             }

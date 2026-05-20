@@ -13,8 +13,6 @@ use crate::db::{init_db, load_messages};
 use crate::http::handle_connection;
 use crate::state::ServerState;
 
-use rusqlite::Connection;
-
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     // -------------------------
