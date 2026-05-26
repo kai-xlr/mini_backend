@@ -1,22 +1,12 @@
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub enum ChatEvent {
-    ClientConnected(String),
-    MessageReceived { sender: String, body: String },
-    MessageBroadcast(String),
-    ClientDisconnected(String),
-}
+use crate::models::{ChatEvent, RecordedEvent};
 
 pub struct ServerState {
     clients: HashSet<String>,
     messages: Vec<String>,
     events: Vec<RecordedEvent>,
-}
-
-pub struct RecordedEvent {
-    pub timestamp: u64,
-    pub event: ChatEvent,
 }
 
 impl ServerState {
@@ -48,13 +38,16 @@ impl ServerState {
         &self.messages
     }
 
-    pub fn record_event(&mut self, event: ChatEvent) {
+    // Assignment 4: Centralized timestamp generation that returns the value
+    pub fn record_event(&mut self, event: ChatEvent) -> u64 {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
         self.events.push(RecordedEvent { timestamp, event });
+
+        timestamp
     }
 
     pub fn events(&self) -> &[RecordedEvent] {
@@ -65,6 +58,7 @@ impl ServerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::ChatEvent;
 
     #[test]
     fn test_new_state_is_empty() {
@@ -96,8 +90,9 @@ mod tests {
     #[test]
     fn test_record_event() {
         let mut s = ServerState::new();
-        s.record_event(ChatEvent::ClientConnected("addr".into()));
-        s.record_event(ChatEvent::ClientDisconnected("addr".into()));
+        let t1 = s.record_event(ChatEvent::ClientConnected("addr".into()));
+        let t2 = s.record_event(ChatEvent::ClientDisconnected("addr".into()));
         assert_eq!(s.events().len(), 2);
+        assert!(t1 <= t2); // Quick validation on returned type
     }
 }

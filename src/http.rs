@@ -4,13 +4,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, broadcast};
 
-use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::WebSocketStream;
+use tokio_tungstenite::tungstenite::protocol::Role;
 
 use rusqlite::Connection;
 
+use crate::models::ChatEvent;
 use crate::routes::{ok, route_request};
-use crate::state::{ChatEvent, ServerState};
+use crate::state::ServerState;
 use crate::websocket::handle_websocket;
 
 // -------------------------
@@ -30,6 +31,49 @@ fn parse_request_line(request: &str) -> (&str, &str) {
 async fn write_response(stream: &mut TcpStream, response: String) {
     let _ = stream.write_all(response.as_bytes()).await;
     let _ = stream.flush().await;
+}
+
+// Assignment 5: Extract formatting logic out of the main handler handler block
+fn format_events_body(state: &ServerState) -> String {
+    let mut lines = Vec::new();
+
+    for recorded in state.events() {
+        let line = match &recorded.event {
+            ChatEvent::ClientConnected(addr) => {
+                format!("[{}] CONNECTED: {}", recorded.timestamp, addr)
+            }
+            ChatEvent::MessageReceived { sender, body } => {
+                format!(
+                    "[{}] RECEIVED from {}: {}",
+                    recorded.timestamp, sender, body
+                )
+            }
+            ChatEvent::MessageBroadcast(msg) => {
+                format!("[{}] BROADCAST: {}", recorded.timestamp, msg)
+            }
+            ChatEvent::ClientDisconnected(addr) => {
+                format!("[{}] DISCONNECTED: {}", recorded.timestamp, addr)
+            }
+        };
+        lines.push(line);
+    }
+
+    lines.join("\n")
+}
+
+// Assignment 5: Extract verification auditing calculations out of the main handler
+fn perform_integrity_audit(memory_count: usize, db_count: usize) -> String {
+    if memory_count == db_count {
+        format!(
+            "INTEGRITY OK: [{}] events verified chronologically.",
+            memory_count
+        )
+    } else {
+        format!(
+            "INTEGRITY ERROR: Memory has [{}] entries but DB has [{}] entries.",
+            memory_count, db_count
+        )
+    }
 }
 
 // -------------------------
@@ -142,7 +186,6 @@ pub async fn handle_connection(
     match stream.read(&mut buffer).await {
         Ok(size) if size > 0 => {
             let request = String::from_utf8_lossy(&buffer[..size]);
-
             let (method, path) = parse_request_line(&request);
 
             if method == "GET" && path == "/messages" {
@@ -155,35 +198,8 @@ pub async fn handle_connection(
 
             if method == "GET" && path == "/events" {
                 let s = state.lock().await;
-
-                let mut lines = Vec::new();
-
-                for recorded in s.events() {
-                    let line = match &recorded.event {
-                        ChatEvent::ClientConnected(addr) => {
-                            format!("[{}] CONNECTED: {}", recorded.timestamp, addr)
-                        }
-
-                        ChatEvent::MessageReceived { sender, body } => {
-                            format!(
-                                "[{}] RECEIVED from {}: {}",
-                                recorded.timestamp, sender, body
-                            )
-                        }
-
-                        ChatEvent::MessageBroadcast(msg) => {
-                            format!("[{}] BROADCAST: {}", recorded.timestamp, msg)
-                        }
-
-                        ChatEvent::ClientDisconnected(addr) => {
-                            format!("[{}] DISCONNECTED: {}", recorded.timestamp, addr)
-                        }
-                    };
-
-                    lines.push(line);
-                }
-
-                let body = lines.join("\n");
+                // Assignment 5: Cleaned up call signature
+                let body = format_events_body(&s);
                 let response = ok(&body);
                 write_response(&mut stream, response).await;
                 return;
@@ -193,8 +209,8 @@ pub async fn handle_connection(
                 let memory = state.lock().await;
                 let memory_count = memory.events().len();
 
-                let db = db.lock().await;
-                let db_count = match crate::db::get_event_count(&db) {
+                let db_conn = db.lock().await;
+                let db_count = match crate::storage::get_event_count(&db_conn) {
                     Ok(c) => c,
                     Err(_) => {
                         let response = ok("INTEGRITY ERROR: Unable to read database");
@@ -203,40 +219,20 @@ pub async fn handle_connection(
                     }
                 };
 
-                let body = if memory_count == db_count {
-                    format!(
-                        "INTEGRITY OK: [{}] events verified chronologically.",
-                        memory_count
-                    )
-                } else {
-                    format!(
-                        "INTEGRITY ERROR: Memory has [{}] entries but DB has [{}] entries.",
-                        memory_count, db_count
-                    )
-                };
-
+                // Assignment 5: Cleaned up audit call logic
+                let body = perform_integrity_audit(memory_count, db_count);
                 let response = ok(&body);
                 write_response(&mut stream, response).await;
                 return;
             }
 
-            // -------------------------
-            // WebSocket upgrade
-            // -------------------------
             if method == "GET" && path == "/ws" {
-                return handle_websocket_upgrade(
-                    stream, &request, tx, state, db, addr,
-                )
-                .await;
+                return handle_websocket_upgrade(stream, &request, tx, state, db, addr).await;
             }
 
-            // -------------------------
-            // normal routing
-            // -------------------------
             let (_status, response) = route_request(&request);
             write_response(&mut stream, response).await;
         }
-
         _ => {}
     }
 }
