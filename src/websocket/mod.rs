@@ -10,7 +10,7 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 use rusqlite::Connection;
 
-use crate::models::ChatEvent;
+use crate::events::ChatEvent;
 use crate::state::ServerState;
 use crate::storage::{save_event, save_message};
 

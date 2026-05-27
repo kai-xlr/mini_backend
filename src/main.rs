@@ -1,5 +1,6 @@
+mod events;
 mod http;
-mod models;
+mod replay;
 mod routes;
 mod state;
 mod storage;
@@ -42,7 +43,7 @@ async fn main() -> std::io::Result<()> {
 
         if let Ok(stored) = load_events(&conn_lock) {
             if !stored.is_empty() {
-                let (event_count, msg_count) = state_inner.reconstruct_from_events(stored);
+                let (event_count, msg_count) = replay::reconstruct_from_events(&mut state_inner, stored);
                 println!(
                     "[REPLAY] Restored {} events, {} messages from event store",
                     event_count, msg_count

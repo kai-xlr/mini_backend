@@ -9,7 +9,8 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 
 use rusqlite::Connection;
 
-use crate::models::ChatEvent;
+use crate::events::ChatEvent;
+use crate::replay;
 use crate::routes::{ok, route_request};
 use crate::state::ServerState;
 use crate::storage::load_events;
@@ -245,7 +246,7 @@ pub async fn handle_connection(
                 let body = match load_events(&conn) {
                     Ok(stored) => {
                         let mut s = state.lock().await;
-                        let (ec, mc) = s.reconstruct_from_events(stored);
+                        let (ec, mc) = replay::reconstruct_from_events(&mut s, stored);
                         drop(s);
                         format!(
                             "Replay complete.\n  Events reconstructed: {}\n  Messages reconstructed: {}",

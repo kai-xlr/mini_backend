@@ -160,4 +160,88 @@ mod tests {
         let events = load_events(&conn).unwrap();
         assert!(events.is_empty());
     }
+
+    #[test]
+    fn test_save_event_load_events_roundtrip() {
+        let conn = setup();
+        save_event(&conn, 0, 100, "ClientConnected", "a").unwrap();
+        save_event(&conn, 1, 200, "MessageBroadcast", "hello").unwrap();
+
+        let loaded = load_events(&conn).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0], (0, 100, "ClientConnected".into(), "a".into()));
+        assert_eq!(loaded[1], (1, 200, "MessageBroadcast".into(), "hello".into()));
+    }
+
+    #[test]
+    fn test_persistence_across_restart() {
+        // Simulated restart: close connection, reopen, verify events survive.
+        let path = std::format!("/tmp/test_persistence_{}.db", std::process::id());
+        let _ = std::fs::remove_file(&path);
+
+        // First session
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS event_store (
+                    id INTEGER PRIMARY KEY,
+                    sequence_id INTEGER NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    details TEXT NOT NULL
+                )",
+            )
+            .unwrap();
+            save_event(&conn, 0, 100, "ClientConnected", "alice").unwrap();
+            save_event(&conn, 1, 200, "MessageBroadcast", "persist!").unwrap();
+        }
+
+        // Second session (simulated restart)
+        {
+            let conn = Connection::open(&path).unwrap();
+            let loaded = load_events(&conn).unwrap();
+            assert_eq!(loaded.len(), 2);
+            assert_eq!(loaded[0], (0, 100, "ClientConnected".into(), "alice".into()));
+            assert_eq!(loaded[1], (1, 200, "MessageBroadcast".into(), "persist!".into()));
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_events_ordered_by_sequence_id() {
+        let conn = setup();
+        // Insert out of sequence_id order
+        save_event(&conn, 5, 500, "ClientConnected", "e").unwrap();
+        save_event(&conn, 1, 100, "ClientConnected", "b").unwrap();
+        save_event(&conn, 3, 300, "ClientConnected", "d").unwrap();
+        save_event(&conn, 0, 0, "ClientConnected", "a").unwrap();
+        save_event(&conn, 2, 200, "ClientConnected", "c").unwrap();
+
+        let loaded = load_events(&conn).unwrap();
+        assert_eq!(loaded.len(), 5);
+        // Must be ordered by sequence_id ASC
+        assert_eq!(loaded[0].0, 0);
+        assert_eq!(loaded[1].0, 1);
+        assert_eq!(loaded[2].0, 2);
+        assert_eq!(loaded[3].0, 3);
+        assert_eq!(loaded[4].0, 5);
+    }
+
+    #[test]
+    fn test_save_message_then_event_integrity() {
+        let conn = setup();
+
+        // Both tables are written during live operation
+        save_message(&conn, "hello").unwrap();
+        save_event(&conn, 0, 100, "MessageBroadcast", "hello").unwrap();
+
+        let msgs = load_messages(&conn).unwrap();
+        let events = load_events(&conn).unwrap();
+
+        assert_eq!(msgs, vec!["hello"]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].2, "MessageBroadcast");
+        assert_eq!(events[0].3, "hello");
+    }
 }
