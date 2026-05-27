@@ -7,6 +7,7 @@ pub struct ServerState {
     clients: HashSet<String>,
     messages: Vec<String>,
     events: Vec<RecordedEvent>,
+    next_seq: u64,
 }
 
 impl ServerState {
@@ -15,6 +16,7 @@ impl ServerState {
             clients: HashSet::new(),
             messages: Vec::new(),
             events: Vec::new(),
+            next_seq: 0,
         }
     }
 
@@ -39,61 +41,63 @@ impl ServerState {
     }
 
     // Assignment 4: Centralized timestamp generation that returns the value
-    pub fn record_event(&mut self, event: ChatEvent) -> u64 {
+    // Returns (sequence_id, timestamp) — sequence is a deterministic monotonic counter
+    pub fn record_event(&mut self, event: ChatEvent) -> (u64, u64) {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        self.events.push(RecordedEvent { timestamp, event });
+        self.events.push(RecordedEvent {
+            sequence_id: seq,
+            timestamp,
+            event,
+        });
 
-        timestamp
+        (seq, timestamp)
     }
 
     pub fn events(&self) -> &[RecordedEvent] {
         &self.events
     }
 
-    /// Append-only replay: populates events vec from stored data.
-    /// Does NOT touch messages or clients.
-    /// Returns the number of events replayed.
-    #[allow(dead_code)]
-    pub fn replay_events(&mut self, stored: Vec<(u64, String, String)>) -> usize {
-        let mut count = 0;
-        for (timestamp, event_type, details) in stored {
-            if let Some(event) = ChatEvent::from_event_store(&event_type, &details) {
-                self.events.push(RecordedEvent { timestamp, event });
-                count += 1;
-            }
-        }
-        count
-    }
-
     /// Full reconstruction: clears messages and events, then rebuilds
-    /// both from the stored event log. MessageBroadcast events are
-    /// used to reconstruct the messages vec. Returns (event_count, msg_count).
+    /// both from the stored event log ordered by sequence_id.
+    /// MessageBroadcast events reconstruct the messages vec.
+    /// Also restores next_seq so new events continue the sequence.
+    /// Returns (event_count, msg_count).
     pub fn reconstruct_from_events(
         &mut self,
-        stored: Vec<(u64, String, String)>,
+        stored: Vec<(u64, u64, String, String)>,
     ) -> (usize, usize) {
         self.messages.clear();
         self.events.clear();
 
-        let mut event_count = 0;
         let mut msg_count = 0;
 
-        for (timestamp, event_type, details) in stored {
+        for (seq, timestamp, event_type, details) in stored {
             if let Some(event) = ChatEvent::from_event_store(&event_type, &details) {
                 if let ChatEvent::MessageBroadcast(ref msg) = event {
                     self.messages.push(msg.clone());
                     msg_count += 1;
                 }
-                self.events.push(RecordedEvent { timestamp, event });
-                event_count += 1;
+                self.events.push(RecordedEvent {
+                    sequence_id: seq,
+                    timestamp,
+                    event,
+                });
             }
         }
 
-        (event_count, msg_count)
+        // Restore next_seq so new events continue the monotonic sequence
+        if let Some(max_seq) = self.events.iter().map(|e| e.sequence_id).max() {
+            self.next_seq = max_seq + 1;
+        }
+
+        (self.events.len(), msg_count)
     }
 }
 
@@ -132,29 +136,12 @@ mod tests {
     #[test]
     fn test_record_event() {
         let mut s = ServerState::new();
-        let t1 = s.record_event(ChatEvent::ClientConnected("addr".into()));
-        let t2 = s.record_event(ChatEvent::ClientDisconnected("addr".into()));
+        let (seq1, t1) = s.record_event(ChatEvent::ClientConnected("addr".into()));
+        let (seq2, t2) = s.record_event(ChatEvent::ClientDisconnected("addr".into()));
         assert_eq!(s.events().len(), 2);
-        assert!(t1 <= t2); // Quick validation on returned type
-    }
-
-    #[test]
-    fn test_replay_events_populates_events_only() {
-        let mut s = ServerState::new();
-        s.add_message("existing".into());
-
-        let stored = vec![
-            (10, "ClientConnected".into(), "a".into()),
-            (20, "MessageBroadcast".into(), "hello".into()),
-            (30, "ClientDisconnected".into(), "a".into()),
-        ];
-
-        let count = s.replay_events(stored);
-        assert_eq!(count, 3);
-        assert_eq!(s.events().len(), 3);
-        // Existing messages preserved
-        assert_eq!(s.messages().len(), 1);
-        assert_eq!(s.messages()[0], "existing");
+        assert_eq!(seq1, 0);
+        assert_eq!(seq2, 1);
+        assert!(t1 <= t2);
     }
 
     #[test]
@@ -163,34 +150,35 @@ mod tests {
         s.add_message("should-be-cleared".into());
 
         let stored = vec![
-            (10, "ClientConnected".into(), "a".into()),
-            (20, "MessageReceived".into(), "192.168.1.1:9999: hi".into()),
-            (30, "MessageBroadcast".into(), "192.168.1.1:9999: hi".into()),
-            (40, "ClientDisconnected".into(), "a".into()),
+            (0, 10, "ClientConnected".into(), "a".into()),
+            (1, 20, "MessageReceived".into(), "192.168.1.1:9999: hi".into()),
+            (2, 30, "MessageBroadcast".into(), "192.168.1.1:9999: hi".into()),
+            (3, 40, "ClientDisconnected".into(), "a".into()),
         ];
 
         let (event_count, msg_count) = s.reconstruct_from_events(stored);
         assert_eq!(event_count, 4);
         assert_eq!(msg_count, 1);
-        // Old messages cleared
         assert_eq!(s.messages().len(), 1);
         assert_eq!(s.messages()[0], "192.168.1.1:9999: hi");
         assert_eq!(s.events().len(), 4);
+        // next_seq restored
+        let (seq, _) = s.record_event(ChatEvent::ClientConnected("b".into()));
+        assert_eq!(seq, 4);
     }
 
     #[test]
     fn test_replay_order_matters() {
-        // Verify that replay order affects reconstructed state
         let mut s1 = ServerState::new();
         let mut s2 = ServerState::new();
 
         let stored_correct = vec![
-            (10, "MessageBroadcast".into(), "first".into()),
-            (20, "MessageBroadcast".into(), "second".into()),
+            (0, 10, "MessageBroadcast".into(), "first".into()),
+            (1, 20, "MessageBroadcast".into(), "second".into()),
         ];
         let stored_wrong = vec![
-            (10, "MessageBroadcast".into(), "second".into()),
-            (20, "MessageBroadcast".into(), "first".into()),
+            (1, 20, "MessageBroadcast".into(), "second".into()),
+            (0, 10, "MessageBroadcast".into(), "first".into()),
         ];
 
         let (_, m1) = s1.reconstruct_from_events(stored_correct);
@@ -198,9 +186,55 @@ mod tests {
 
         assert_eq!(m1, 2);
         assert_eq!(m2, 2);
-        // Order differs
         assert_eq!(s1.messages()[0], "first");
         assert_eq!(s2.messages()[0], "second");
         assert_ne!(s1.messages(), s2.messages());
+    }
+
+    #[test]
+    fn test_deterministic_replay() {
+        let events = vec![
+            (0, 100, "ClientConnected".into(), "alice".into()),
+            (1, 200, "MessageReceived".into(), "alice: hey".into()),
+            (2, 300, "MessageBroadcast".into(), "alice: hey".into()),
+            (3, 400, "ClientDisconnected".into(), "alice".into()),
+        ];
+
+        let mut s1 = ServerState::new();
+        let mut s2 = ServerState::new();
+
+        s1.reconstruct_from_events(events.clone());
+        s2.reconstruct_from_events(events);
+
+        assert_eq!(s1.messages(), s2.messages());
+        assert_eq!(s1.events().len(), s2.events().len());
+        assert_eq!(
+            s1.events().iter().map(|e| e.sequence_id).collect::<Vec<_>>(),
+            s2.events().iter().map(|e| e.sequence_id).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn test_sequence_ids_are_monotonic() {
+        let mut s = ServerState::new();
+
+        for i in 0..5u64 {
+            let (seq, _) =
+                s.record_event(ChatEvent::ClientConnected(format!("client_{}", i)));
+            assert_eq!(seq, i);
+        }
+
+        // Next seq continues after replay
+        let stored = s
+            .events()
+            .iter()
+            .map(|e| (e.sequence_id, e.timestamp, e.event.event_type().to_string(), e.event.details()))
+            .collect::<Vec<_>>();
+
+        let mut restored = ServerState::new();
+        restored.reconstruct_from_events(stored);
+
+        let (seq, _) = restored.record_event(ChatEvent::ClientConnected("new".into()));
+        assert_eq!(seq, 5);
     }
 }

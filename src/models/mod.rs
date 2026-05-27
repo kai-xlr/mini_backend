@@ -5,7 +5,26 @@ pub enum ChatEvent {
     ClientDisconnected(String),
 }
 
+#[allow(dead_code)]
 impl ChatEvent {
+    pub fn event_type(&self) -> &str {
+        match self {
+            ChatEvent::ClientConnected(_) => "ClientConnected",
+            ChatEvent::MessageReceived { .. } => "MessageReceived",
+            ChatEvent::MessageBroadcast(_) => "MessageBroadcast",
+            ChatEvent::ClientDisconnected(_) => "ClientDisconnected",
+        }
+    }
+
+    pub fn details(&self) -> String {
+        match self {
+            ChatEvent::ClientConnected(addr) => addr.clone(),
+            ChatEvent::MessageReceived { sender, body } => format!("{}: {}", sender, body),
+            ChatEvent::MessageBroadcast(msg) => msg.clone(),
+            ChatEvent::ClientDisconnected(addr) => addr.clone(),
+        }
+    }
+
     pub fn from_event_store(event_type: &str, details: &str) -> Option<Self> {
         match event_type {
             "ClientConnected" => Some(ChatEvent::ClientConnected(details.to_string())),
@@ -24,6 +43,7 @@ impl ChatEvent {
 }
 
 pub struct RecordedEvent {
+    pub sequence_id: u64,
     pub timestamp: u64,
     pub event: ChatEvent,
 }

@@ -29,10 +29,10 @@ pub async fn handle_websocket(
         s.add_client(addr.to_string());
 
         // Assignment 4: Drive clock entirely from ServerState method
-        let timestamp = s.record_event(ChatEvent::ClientConnected(addr.to_string()));
+        let (seq, timestamp) = s.record_event(ChatEvent::ClientConnected(addr.to_string()));
 
         let conn = db.lock().await;
-        match save_event(&conn, timestamp, "ClientConnected", &addr.to_string()) {
+        match save_event(&conn, seq, timestamp, "ClientConnected", &addr.to_string()) {
             Ok(_) => {}
             Err(e) => {
                 eprintln!("[DB ERR] Failed to save ClientConnected event: {}", e);
@@ -64,7 +64,7 @@ pub async fn handle_websocket(
                             // -------------------------
                             // Message Received & Stored
                             // -------------------------
-                            let timestamp = {
+                            let (seq, timestamp) = {
                                 let mut s = state.lock().await;
                                 // Assignment 4: Capture baseline time token
                                 s.record_event(ChatEvent::MessageReceived {
@@ -77,6 +77,7 @@ pub async fn handle_websocket(
                                 let conn = db.lock().await;
                                 match save_event(
                                     &conn,
+                                    seq,
                                     timestamp,
                                     "MessageReceived",
                                     &format!("{}: {}", addr, text),
@@ -108,7 +109,7 @@ pub async fn handle_websocket(
                             // -------------------------
                             // Message Broadcast Tracking
                             // -------------------------
-                            let b_timestamp = {
+                            let (b_seq, b_timestamp) = {
                                 let mut s = state.lock().await;
                                 s.record_event(ChatEvent::MessageBroadcast(
                                     broadcast_msg.clone(),
@@ -119,6 +120,7 @@ pub async fn handle_websocket(
                                 let conn = db.lock().await;
                                 match save_event(
                                     &conn,
+                                    b_seq,
                                     b_timestamp,
                                     "MessageBroadcast",
                                     &broadcast_msg,
@@ -172,10 +174,10 @@ pub async fn handle_websocket(
         s.remove_client(&addr.to_string());
 
         // Assignment 4: Unified termination tracking
-        let timestamp = s.record_event(ChatEvent::ClientDisconnected(addr.to_string()));
+        let (seq, timestamp) = s.record_event(ChatEvent::ClientDisconnected(addr.to_string()));
 
         let conn = db.lock().await;
-        match save_event(&conn, timestamp, "ClientDisconnected", &addr.to_string()) {
+        match save_event(&conn, seq, timestamp, "ClientDisconnected", &addr.to_string()) {
             Ok(_) => {}
             Err(e) => {
                 eprintln!("[DB ERR] Failed to save ClientDisconnected event: {}", e);
