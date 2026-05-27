@@ -13,7 +13,7 @@ use tokio::sync::{Mutex, broadcast};
 
 use crate::http::handle_connection;
 use crate::state::ServerState;
-use crate::storage::{init_db, load_messages};
+use crate::storage::{init_db, load_events, load_messages};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -33,22 +33,29 @@ async fn main() -> std::io::Result<()> {
     let conn = Arc::new(Mutex::new(conn));
 
     // -------------------------
-    // LOAD STATE (SAFE)
+    // LOAD STATE VIA REPLAY (EVENT SOURCING)
     // -------------------------
     let mut state_inner = ServerState::new();
 
     {
         let conn_lock = conn.lock().await;
 
-        if let Ok(messages) = load_messages(&conn_lock) {
-            for msg in messages {
-                state_inner.add_message(msg);
+        if let Ok(stored) = load_events(&conn_lock) {
+            if !stored.is_empty() {
+                let (event_count, msg_count) = state_inner.reconstruct_from_events(stored);
+                println!(
+                    "[REPLAY] Restored {} events, {} messages from event store",
+                    event_count, msg_count
+                );
+            } else if let Ok(messages) = load_messages(&conn_lock) {
+                for msg in messages {
+                    state_inner.add_message(msg);
+                }
+                println!(
+                    "[STATE] Restored {} messages from messages table (legacy)",
+                    state_inner.messages().len()
+                );
             }
-
-            println!(
-                "[STATE] Restored {} messages into memory",
-                state_inner.messages().len()
-            );
         }
     }
 

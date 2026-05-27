@@ -12,6 +12,7 @@ use rusqlite::Connection;
 use crate::models::ChatEvent;
 use crate::routes::{ok, route_request};
 use crate::state::ServerState;
+use crate::storage::load_events;
 use crate::websocket::handle_websocket;
 
 // -------------------------
@@ -221,6 +222,38 @@ pub async fn handle_connection(
 
                 // Assignment 5: Cleaned up audit call logic
                 let body = perform_integrity_audit(memory_count, db_count);
+                let response = ok(&body);
+                write_response(&mut stream, response).await;
+                return;
+            }
+
+            if method == "GET" && path == "/replay" {
+                let s = state.lock().await;
+                let body = format!(
+                    "Replay Status:\n  Events: {}\n  Messages: {}\n  Clients: {}",
+                    s.events().len(),
+                    s.messages().len(),
+                    s.client_count(),
+                );
+                let response = ok(&body);
+                write_response(&mut stream, response).await;
+                return;
+            }
+
+            if method == "POST" && path == "/replay" {
+                let conn = db.lock().await;
+                let body = match load_events(&conn) {
+                    Ok(stored) => {
+                        let mut s = state.lock().await;
+                        let (ec, mc) = s.reconstruct_from_events(stored);
+                        drop(s);
+                        format!(
+                            "Replay complete.\n  Events reconstructed: {}\n  Messages reconstructed: {}",
+                            ec, mc
+                        )
+                    }
+                    Err(e) => format!("Replay failed: {}", e),
+                };
                 let response = ok(&body);
                 write_response(&mut stream, response).await;
                 return;

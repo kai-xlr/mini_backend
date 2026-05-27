@@ -60,6 +60,27 @@ pub fn save_event(
     Ok(())
 }
 
+pub fn load_events(conn: &Connection) -> Result<Vec<(u64, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT timestamp, event_type, details FROM event_store ORDER BY id ASC",
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, u64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+
+    let mut events = Vec::new();
+    for event in rows {
+        events.push(event?);
+    }
+
+    Ok(events)
+}
+
 pub fn get_event_count(conn: &Connection) -> Result<usize> {
     let mut stmt = conn.prepare("SELECT COUNT(*) FROM event_store")?;
     let count: usize = stmt.query_row([], |row| row.get(0))?;
@@ -107,5 +128,25 @@ mod tests {
     fn test_get_event_count_empty() {
         let conn = setup();
         assert_eq!(get_event_count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_load_events_ordered() {
+        let conn = setup();
+        save_event(&conn, 100, "ClientConnected", "a").unwrap();
+        save_event(&conn, 200, "MessageBroadcast", "hello").unwrap();
+        save_event(&conn, 300, "ClientDisconnected", "a").unwrap();
+        let events = load_events(&conn).unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0], (100, "ClientConnected".into(), "a".into()));
+        assert_eq!(events[1], (200, "MessageBroadcast".into(), "hello".into()));
+        assert_eq!(events[2], (300, "ClientDisconnected".into(), "a".into()));
+    }
+
+    #[test]
+    fn test_load_events_empty() {
+        let conn = setup();
+        let events = load_events(&conn).unwrap();
+        assert!(events.is_empty());
     }
 }
