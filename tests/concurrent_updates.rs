@@ -28,9 +28,6 @@ async fn start_test_server() -> SocketAddr {
          )",
     )
     .unwrap();
-    let _ = conn.execute_batch(
-        "ALTER TABLE event_store ADD COLUMN sequence_id INTEGER NOT NULL DEFAULT 0;",
-    );
     let conn = Arc::new(Mutex::new(conn));
 
     let state = Arc::new(Mutex::new(mini_backend::state::ServerState::new()));
@@ -81,7 +78,11 @@ async fn test_concurrent_updates() {
 
             tokio::spawn(async move {
                 let mut read = read;
-                while let Some(Ok(_)) = read.next().await {}
+                while let Some(msg) = read.next().await {
+                    if let Err(e) = msg {
+                        eprintln!("[Test] Reader error for client {}: {}", client_id, e);
+                    }
+                }
             });
 
             for msg_id in 0..messages_per_client {
@@ -91,7 +92,9 @@ async fn test_concurrent_updates() {
                 tokio::task::yield_now().await;
             }
 
-            write.close().await.ok();
+            if let Err(e) = write.close().await {
+                eprintln!("[Test] Failed to close WS for client {}: {}", client_id, e);
+            }
         });
         handles.push(handle);
     }
@@ -100,9 +103,22 @@ async fn test_concurrent_updates() {
         handle.await.expect("Client task panicked");
     }
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let events_body = loop {
+        let body = http_get_body(addr, "/events").await;
+        let broadcast_count = body.lines().filter(|l| l.contains("BROADCAST:")).count();
+        if broadcast_count >= total_expected {
+            break body;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!(
+                "Timed out waiting for broadcasts: got {}, expected {}",
+                broadcast_count, total_expected
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
 
-    let events_body = http_get_body(addr, "/events").await;
     println!("=== Server Events ===\n{}", events_body);
 
     let lines: Vec<&str> = events_body.lines().filter(|l| !l.is_empty()).collect();
@@ -128,6 +144,9 @@ async fn test_concurrent_updates() {
     }
     println!("All {} individual messages verified present", total_expected);
 
+    // Sequence IDs are parsed from the format "[seq_id] [timestamp] EVENT: ..."
+    // (see format_events_body in src/http.rs). Any format change there must update
+    // this parsing.
     let mut seq_ids: Vec<u64> = lines
         .iter()
         .filter_map(|l| {
@@ -149,6 +168,18 @@ async fn test_concurrent_updates() {
         seq_ids.len(),
         seq_ids.len().saturating_sub(1)
     );
+
+    let connect_lines: Vec<&&str> = lines.iter().filter(|l| l.contains("] CONNECTED:")).collect();
+    let disconnect_lines: Vec<&&str> = lines.iter().filter(|l| l.contains("] DISCONNECTED:")).collect();
+    println!(
+        "Connections: {} (expected {}), Disconnections: {} (expected {})",
+        connect_lines.len(),
+        num_clients,
+        disconnect_lines.len(),
+        num_clients
+    );
+    assert_eq!(connect_lines.len(), num_clients);
+    assert_eq!(disconnect_lines.len(), num_clients);
 
     let audit = http_get_body(addr, "/events/audit").await;
     println!("=== Audit ===\n{}", audit);
