@@ -12,3 +12,6 @@
 *.iml
 
 chat.db
+*.db
+*.db-journal
+*.db-wal
