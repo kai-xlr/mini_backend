@@ -1,26 +1,14 @@
-mod events;
-mod http;
-mod replay;
-mod routes;
-mod state;
-mod storage;
-mod websocket;
-
 use std::process;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, broadcast};
 
-use crate::http::handle_connection;
-use crate::state::ServerState;
-use crate::storage::{init_db, load_events, load_messages};
+use mini_backend::state::ServerState;
+use mini_backend::storage::{init_db, load_events, load_messages};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    // -------------------------
-    // DB INIT
-    // -------------------------
     let conn = match init_db() {
         Ok(conn) => conn,
         Err(e) => {
@@ -33,9 +21,6 @@ async fn main() -> std::io::Result<()> {
 
     let conn = Arc::new(Mutex::new(conn));
 
-    // -------------------------
-    // LOAD STATE VIA REPLAY (EVENT SOURCING)
-    // -------------------------
     let mut state_inner = ServerState::new();
 
     {
@@ -43,7 +28,8 @@ async fn main() -> std::io::Result<()> {
 
         if let Ok(stored) = load_events(&conn_lock) {
             if !stored.is_empty() {
-                let (event_count, msg_count) = replay::reconstruct_from_events(&mut state_inner, stored);
+                let (event_count, msg_count) =
+                    mini_backend::replay::reconstruct_from_events(&mut state_inner, stored);
                 println!(
                     "[REPLAY] Restored {} events, {} messages from event store",
                     event_count, msg_count
@@ -62,9 +48,6 @@ async fn main() -> std::io::Result<()> {
 
     let state = Arc::new(Mutex::new(state_inner));
 
-    // -------------------------
-    // SERVER START
-    // -------------------------
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
 
     let (tx, _) = broadcast::channel::<String>(16);
@@ -72,7 +55,6 @@ async fn main() -> std::io::Result<()> {
 
     println!("[SERVER] Listening on http://127.0.0.1:8080");
 
-    // Assignment 6: Safe initialization snapshot visibility log
     {
         let s = state.lock().await;
         println!(
@@ -80,18 +62,9 @@ async fn main() -> std::io::Result<()> {
             s.client_count(),
             s.messages().len()
         );
-        // Lock safely drops here before entry to loop
     }
 
-    loop {
-        let (stream, _) = listener.accept().await?;
+    mini_backend::serve(listener, conn, state, tx).await;
 
-        let tx = Arc::clone(&tx);
-        let state = Arc::clone(&state);
-        let db = Arc::clone(&conn);
-
-        tokio::spawn(async move {
-            handle_connection(stream, tx, state, db).await;
-        });
-    }
+    Ok(())
 }

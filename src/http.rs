@@ -42,19 +42,28 @@ fn format_events_body(state: &ServerState) -> String {
     for recorded in state.events() {
         let line = match &recorded.event {
             ChatEvent::ClientConnected(addr) => {
-                format!("[{}] CONNECTED: {}", recorded.timestamp, addr)
+                format!(
+                    "[{}] [{}] CONNECTED: {}",
+                    recorded.sequence_id, recorded.timestamp, addr
+                )
             }
             ChatEvent::MessageReceived { sender, body } => {
                 format!(
-                    "[{}] RECEIVED from {}: {}",
-                    recorded.timestamp, sender, body
+                    "[{}] [{}] RECEIVED from {}: {}",
+                    recorded.sequence_id, recorded.timestamp, sender, body
                 )
             }
             ChatEvent::MessageBroadcast(msg) => {
-                format!("[{}] BROADCAST: {}", recorded.timestamp, msg)
+                format!(
+                    "[{}] [{}] BROADCAST: {}",
+                    recorded.sequence_id, recorded.timestamp, msg
+                )
             }
             ChatEvent::ClientDisconnected(addr) => {
-                format!("[{}] DISCONNECTED: {}", recorded.timestamp, addr)
+                format!(
+                    "[{}] [{}] DISCONNECTED: {}",
+                    recorded.sequence_id, recorded.timestamp, addr
+                )
             }
         };
         lines.push(line);
